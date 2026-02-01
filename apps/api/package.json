@@ -1,0 +1,29 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc -b",
+    "dev": "pnpm tsx --watch src/index.ts",
+    "start": "pnpm tsx src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^1.39.0",
+    "@hono/node-server": "^1.19.9",
+    "dotenv": "^17.2.3",
+    "hono": "^4.11.7",
+    "pdf-to-img": "^5.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

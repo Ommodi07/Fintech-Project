@@ -1,0 +1,8 @@
+output.txt
+/extracted_images
+state.pdf
+/venv
+output.json
+.env
+/__pycache__
+/static

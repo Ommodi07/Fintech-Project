@@ -31,10 +31,10 @@ class TransactionCategorizer:
                 'store', 'shop', 'market', 'mall', 'amazon', 'flipkart', 
                 'shopping', 'purchase', 'notebook'
             ],
-            'Digital Services': [
-                'google', 'upi', 'digital', 'online', 'app', 'software', 
-                'subscription', 'internet'
-            ],
+            # 'Digital Services': [
+            #     'google', 'upi', 'digital', 'online', 'app', 'software', 
+            #     'subscription', 'internet'
+            # ],
             'Income': [
                 'salary', 'interest', 'int.pd', 'credit', 'refund', 'cashback'
             ],

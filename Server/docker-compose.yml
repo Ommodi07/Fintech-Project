@@ -1,0 +1,30 @@
+services:
+  fintech-server:
+    build: .
+    container_name: fintech-server
+    ports:
+      - "5000:5000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - HOST=0.0.0.0
+      - PORT=5000
+      - DEBUG=false
+    env_file:
+      - .env
+    volumes:
+      # Mount for persistent categorized transactions
+      - ./categorized_transactions.json:/app/categorized_transactions.json
+      # Mount for temporary file processing (optional)
+      - temp_uploads:/app/temp_uploads
+      - extracted_images:/app/extracted_images
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  temp_uploads:
+  extracted_images:

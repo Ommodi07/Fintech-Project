@@ -67,7 +67,7 @@ def health_score_main(file_path="categorized_transactions.json"):
         saving_rate = (savings/total_income) if total_income > 0 else 0
         discretionary_ratio = ((food + entertainment) / total_expense) if total_expense > 0 else 0
         
-        score = 0.04*saving_rate + 0.03*volatility + 0.03*discretionary_ratio
+        score = 0.4*saving_rate + 0.3*volatility + 0.3*discretionary_ratio
         return round(score, 2)
     except Exception as e:
         return {"error": f"Calculation error: {str(e)}"}

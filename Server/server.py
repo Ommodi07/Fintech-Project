@@ -9,6 +9,8 @@ from pdftojson import pdftojson
 from Categorize import categorical
 from Analytics import analytic
 from Analytics import health_score
+from Goal import goal_setter
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -20,19 +22,26 @@ app.add_middleware(
     allow_headers=["*"], 
 )
 
-class dataobj:
-    def __init__(self):
-        self.total_expense = 0
-        self.total_income = 0
-        self.savings = 0
-        self.max_spending_category = ""
+class dataobj(BaseModel):
+    total_expense: float = 0
+    total_income: float = 0
+    savings: float = 0
+    max_spending_category: str = ""
+
+class goal(BaseModel):
+    goal_name: str = ""
+    target_amount: float = 0
+    time_horizon_months: int = 0
 
 @app.get("/")
 async def root():
     return {"content" : {"GET" : {
-        "health" : "/health"
+        "health" : "/health",
+        "summary" : "/analytics/summary",
+        "health_score" : "/analytics/health_score"
     }, "POST" : {
-        "upload bank statement" : "/upload_bank_statement"
+        "upload bank statement" : "/upload_bank_statement (file as param)",
+        "Goal setter" : "/goal"
     }}}
 
 @app.get("/health") 
@@ -105,6 +114,11 @@ async def analytics_health():
     return {
         "Health Score" : health_score.health_score_main("categorized_transactions.json")
     }
+
+@app.post("/goal") 
+async def setgoal(data : goal):
+    res = goal_setter.set_goal(data)
+    return res
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=5000)

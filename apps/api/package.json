@@ -7,7 +7,12 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc -b",
     "dev": "pnpm tsx --watch src/index.ts",
-    "start": "pnpm tsx src/index.ts"
+    "start": "pnpm tsx src/index.ts",
+    "env:run": "dotenv --",
+    "db:generate": "pnpm env:run pnpm --filter=@repo/database db:generate",
+    "db:migrate": "pnpm env:run pnpm --filter=@repo/database",
+    "db:studio": "pnpm env:run pnpm --filter=@repo/database db:studio",
+    "db:push":"pnpm env:run pnpm --filter=@repo/database db:push"
   },
   "keywords": [],
   "author": "",
@@ -21,8 +26,11 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@repo/auth": "workspace:*",
+    "@repo/database": "workspace:*",
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^22.15.3",
+    "dotenv-cli": "^11.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

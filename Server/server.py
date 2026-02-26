@@ -2,10 +2,12 @@ from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Header, D
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 import uvicorn
 import os
 import tempfile
 import json
+from datetime import date, datetime
 from pdftojson import pdftojson
 from Categorize import categorical
 from Analytics import analytic
@@ -17,10 +19,36 @@ from User import user_manager
 from pydantic import BaseModel
 from typing import List, Optional
 
+# Database imports
+from sqlalchemy.ext.asyncio import AsyncSession
+from database.connection import get_db, init_db, engine
+from database.crud import (
+    TransactionCRUD, BankStatementCRUD, GoalCRUD, 
+    AlertCRUD, CategoryCRUD, RecurringExpenseCRUD, AnalyticsCRUD
+)
+from database.models import GoalStatus, GoalPriority, AlertSeverity
+
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize database
+    print("Initializing database...")
+    await init_db()
+    # Seed default categories
+    async for db in get_db():
+        await CategoryCRUD.seed_default_categories(db)
+        break
+    print("Database initialized successfully!")
+    yield
+    # Shutdown: Close connections
+    await engine.dispose()
+    print("Database connections closed.")
+
 app = FastAPI(
     title="Personal Finance Manager API",
     description="Complete financial management with analytics, goals, alerts, and AI assistance",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -78,6 +106,35 @@ class PreferencesUpdate(BaseModel):
     email_alerts: Optional[bool] = None
     budget_alerts: Optional[bool] = None
     weekly_summary: Optional[bool] = None
+
+
+# ==================== DATABASE PYDANTIC MODELS ====================
+
+class TransactionFilter(BaseModel):
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    category: Optional[str] = None
+    skip: int = 0
+    limit: int = 100
+
+class GoalCreateDB(BaseModel):
+    name: str
+    target_amount: float
+    time_horizon_months: int
+    goal_type: Optional[str] = None
+    priority: str = "medium"
+    description: Optional[str] = None
+
+class GoalUpdateDB(BaseModel):
+    goal_id: int
+    amount: float
+
+class AlertCreate(BaseModel):
+    alert_type: str
+    title: str
+    message: str
+    severity: str = "info"
+    action_required: bool = False
 
 
 # ==================== AUTHENTICATION HELPER ====================
@@ -402,6 +459,441 @@ async def get_smart_nudges():
 async def get_bill_reminders():
     """Get upcoming bill payment reminders"""
     return {"reminders": alerts.generate_bill_reminders("categorized_transactions.json")}
+
+
+# ==================== DATABASE ENDPOINTS ====================
+# These endpoints use PostgreSQL for persistent storage
+
+@app.post("/db/upload_statement")
+async def db_upload_statement(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """Upload bank statement and store transactions in database"""
+    try:
+        if not file or not file.filename:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+        
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        
+        # Create temp file
+        temp_dir = tempfile.mkdtemp()
+        temp_pdf_path = os.path.join(temp_dir, file.filename)
+        
+        with open(temp_pdf_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        # Parse PDF
+        json_file_path = pdftojson.main_pdftojson(PDF_PATH=temp_pdf_path)
+        
+        if not json_file_path or not os.path.exists(json_file_path):
+            raise HTTPException(status_code=500, detail="Failed to extract data from PDF")
+        
+        # Categorize transactions
+        categorized_file_path = categorical.main_categorizer(json_file_path)
+        
+        if not categorized_file_path or not os.path.exists(categorized_file_path):
+            raise HTTPException(status_code=500, detail="Failed to categorize transactions")
+        
+        with open(categorized_file_path, 'r', encoding='utf-8') as f:
+            categorized_data = json.load(f)
+        
+        # Create bank statement record
+        statement = await BankStatementCRUD.create(
+            db=db,
+            filename=file.filename,
+            total_transactions=len(categorized_data.get('categories', {}).get('all', [])),
+            parsing_method="gemini_ai",
+            raw_data=categorized_data
+        )
+        
+        # Flatten and store transactions
+        all_transactions = []
+        for category_name, transactions in categorized_data.get('categories', {}).items():
+            for txn in transactions:
+                txn['category'] = category_name
+                all_transactions.append(txn)
+        
+        # Bulk create transactions
+        if all_transactions:
+            await TransactionCRUD.bulk_create(
+                db=db,
+                transactions_data=all_transactions,
+                statement_id=statement.id
+            )
+        
+        # Cleanup temp files
+        try:
+            os.remove(temp_pdf_path)
+            os.rmdir(temp_dir)
+            if os.path.exists(json_file_path):
+                os.remove(json_file_path)
+        except:
+            pass
+        
+        return {
+            "message": "Bank statement uploaded and stored in database",
+            "statement_id": statement.id,
+            "transactions_count": len(all_transactions)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/db/transactions")
+async def db_get_transactions(
+    skip: int = 0,
+    limit: int = 100,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    category: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get transactions from database with filters"""
+    start = datetime.strptime(start_date, '%Y-%m-%d').date() if start_date else None
+    end = datetime.strptime(end_date, '%Y-%m-%d').date() if end_date else None
+    
+    transactions = await TransactionCRUD.get_all(
+        db=db,
+        skip=skip,
+        limit=limit,
+        start_date=start,
+        end_date=end,
+        category=category
+    )
+    
+    return {
+        "transactions": [
+            {
+                "id": t.id,
+                "date": t.date.isoformat() if t.date else None,
+                "description": t.description,
+                "debit": t.debit,
+                "credit": t.credit,
+                "balance": t.balance,
+                "category": t.category_name
+            }
+            for t in transactions
+        ],
+        "count": len(transactions)
+    }
+
+
+@app.get("/db/analytics/summary")
+async def db_analytics_summary(db: AsyncSession = Depends(get_db)):
+    """Get financial summary from database"""
+    summary = await TransactionCRUD.get_summary(db)
+    breakdown = await TransactionCRUD.get_category_breakdown(db)
+    
+    # Find max spending category
+    max_category = "Miscellaneous"
+    max_spending = 0
+    for cat in breakdown:
+        if cat['total_debit'] > max_spending and cat['category'] != 'Income':
+            max_spending = cat['total_debit']
+            max_category = cat['category']
+    
+    return {
+        "total_income": summary['total_income'],
+        "total_expense": summary['total_expense'],
+        "savings": summary['savings'],
+        "max_spending_category": max_category,
+        "transaction_count": summary['transaction_count'],
+        "category_breakdown": breakdown
+    }
+
+
+@app.get("/db/analytics/monthly")
+async def db_analytics_monthly(db: AsyncSession = Depends(get_db)):
+    """Get monthly breakdown from database"""
+    monthly = await TransactionCRUD.get_monthly_breakdown(db)
+    return {"monthly_data": monthly}
+
+
+@app.get("/db/analytics/health")
+async def db_health_score(db: AsyncSession = Depends(get_db)):
+    """Calculate health score from database data"""
+    data = await AnalyticsCRUD.get_health_score_data(db)
+    
+    summary = data['summary']
+    total_income = summary['total_income']
+    total_expense = summary['total_expense']
+    savings = summary['savings']
+    
+    # Component scores calculation
+    scores = {}
+    
+    # Savings score
+    if total_income > 0:
+        savings_rate = savings / total_income
+        scores['savings'] = min(100, savings_rate * 200)
+    else:
+        scores['savings'] = 0
+    
+    # Spending discipline (lower volatility = better)
+    volatility = data['spending_volatility']
+    scores['spending_discipline'] = max(0, 100 - (volatility * 50))
+    
+    # Essential vs discretionary balance
+    essential = data['essential_spending']
+    discretionary = data['discretionary_spending']
+    if total_expense > 0:
+        essential_ratio = essential / total_expense
+        scores['expense_balance'] = 100 - abs(0.65 - essential_ratio) * 100
+        scores['expense_balance'] = max(0, min(100, scores['expense_balance']))
+    else:
+        scores['expense_balance'] = 50
+    
+    # Cash flow score
+    if total_income > 0:
+        cash_flow_ratio = (total_income - total_expense) / total_income
+        scores['cash_flow'] = min(100, max(0, (cash_flow_ratio + 0.5) * 100))
+    else:
+        scores['cash_flow'] = 0
+    
+    # Weighted overall score
+    weights = {'savings': 0.30, 'spending_discipline': 0.25, 'expense_balance': 0.20, 'cash_flow': 0.25}
+    overall_score = sum(scores.get(c, 0) * w for c, w in weights.items())
+    
+    # Grade
+    if overall_score >= 80:
+        grade = "🏆 Excellent"
+    elif overall_score >= 60:
+        grade = "✅ Good"
+    elif overall_score >= 40:
+        grade = "⚠️ Fair"
+    else:
+        grade = "🔴 Needs Improvement"
+    
+    return {
+        "overall_score": round(overall_score, 1),
+        "grade": grade,
+        "component_scores": {k: round(v, 1) for k, v in scores.items()},
+        "metrics": {
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "savings": savings,
+            "savings_rate": round(savings / max(total_income, 1) * 100, 1),
+            "spending_volatility": round(volatility, 4)
+        },
+        "category_breakdown": data['category_breakdown']
+    }
+
+
+# ==================== DATABASE GOAL ENDPOINTS ====================
+
+@app.post("/db/goals")
+async def db_create_goal(data: GoalCreateDB, db: AsyncSession = Depends(get_db)):
+    """Create a new goal in database"""
+    priority_map = {"high": GoalPriority.HIGH, "medium": GoalPriority.MEDIUM, "low": GoalPriority.LOW}
+    
+    goal = await GoalCRUD.create(
+        db=db,
+        name=data.name,
+        target_amount=data.target_amount,
+        time_horizon_months=data.time_horizon_months,
+        goal_type=data.goal_type,
+        priority=priority_map.get(data.priority, GoalPriority.MEDIUM),
+        description=data.description
+    )
+    
+    return {
+        "id": goal.id,
+        "name": goal.name,
+        "target_amount": goal.target_amount,
+        "monthly_required": goal.required_monthly_saving,
+        "deadline": goal.deadline.isoformat() if goal.deadline else None,
+        "status": goal.status.value
+    }
+
+
+@app.get("/db/goals")
+async def db_get_goals(db: AsyncSession = Depends(get_db)):
+    """Get all goals from database"""
+    goals = await GoalCRUD.get_all(db)
+    
+    return {
+        "goals": [
+            {
+                "id": g.id,
+                "name": g.name,
+                "target_amount": g.target_amount,
+                "current_amount": g.current_amount,
+                "progress": g.progress_percentage,
+                "priority": g.priority.value if g.priority else "medium",
+                "status": g.status.value if g.status else "active",
+                "deadline": g.deadline.isoformat() if g.deadline else None,
+                "monthly_required": g.required_monthly_saving
+            }
+            for g in goals
+        ]
+    }
+
+
+@app.get("/db/goals/dashboard")
+async def db_goals_dashboard(db: AsyncSession = Depends(get_db)):
+    """Get goal tracking dashboard from database"""
+    return await GoalCRUD.get_dashboard(db)
+
+
+@app.put("/db/goals/{goal_id}/contribute")
+async def db_goal_contribute(goal_id: int, data: GoalUpdateDB, db: AsyncSession = Depends(get_db)):
+    """Add contribution to a goal"""
+    goal = await GoalCRUD.update_progress(db, goal_id, data.amount)
+    
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    
+    return {
+        "id": goal.id,
+        "name": goal.name,
+        "current_amount": goal.current_amount,
+        "progress": goal.progress_percentage,
+        "status": goal.status.value
+    }
+
+
+@app.delete("/db/goals/{goal_id}")
+async def db_delete_goal(goal_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a goal from database"""
+    deleted = await GoalCRUD.delete(db, goal_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return {"status": "deleted", "goal_id": goal_id}
+
+
+# ==================== DATABASE ALERT ENDPOINTS ====================
+
+@app.get("/db/alerts")
+async def db_get_alerts(
+    unread_only: bool = False,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get alerts from database"""
+    alerts_list = await AlertCRUD.get_all(db, unread_only=unread_only)
+    summary = await AlertCRUD.get_summary(db)
+    
+    return {
+        "summary": summary,
+        "alerts": [
+            {
+                "id": a.id,
+                "type": a.alert_type,
+                "title": a.title,
+                "message": a.message,
+                "severity": a.severity.value,
+                "is_read": a.is_read,
+                "action_required": a.action_required,
+                "created_at": a.created_at.isoformat() if a.created_at else None
+            }
+            for a in alerts_list
+        ]
+    }
+
+
+@app.post("/db/alerts")
+async def db_create_alert(data: AlertCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new alert"""
+    severity_map = {"critical": AlertSeverity.CRITICAL, "warning": AlertSeverity.WARNING, "info": AlertSeverity.INFO}
+    
+    alert = await AlertCRUD.create(
+        db=db,
+        alert_type=data.alert_type,
+        title=data.title,
+        message=data.message,
+        severity=severity_map.get(data.severity, AlertSeverity.INFO),
+        action_required=data.action_required
+    )
+    
+    return {"id": alert.id, "title": alert.title, "severity": alert.severity.value}
+
+
+@app.put("/db/alerts/{alert_id}/read")
+async def db_mark_alert_read(alert_id: int, db: AsyncSession = Depends(get_db)):
+    """Mark an alert as read"""
+    alert = await AlertCRUD.mark_read(db, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"id": alert.id, "is_read": alert.is_read}
+
+
+@app.delete("/db/alerts/{alert_id}")
+async def db_dismiss_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
+    """Dismiss an alert"""
+    dismissed = await AlertCRUD.dismiss(db, alert_id)
+    if not dismissed:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"status": "dismissed", "alert_id": alert_id}
+
+
+# ==================== DATABASE RECURRING EXPENSES ====================
+
+@app.get("/db/recurring")
+async def db_get_recurring(db: AsyncSession = Depends(get_db)):
+    """Get recurring expenses from database"""
+    recurring = await RecurringExpenseCRUD.get_all(db)
+    
+    return {
+        "recurring_expenses": [
+            {
+                "id": r.id,
+                "description": r.description,
+                "amount": r.estimated_amount,
+                "frequency": r.frequency,
+                "category": r.category_name,
+                "is_subscription": r.is_subscription,
+                "last_occurrence": r.last_occurrence.isoformat() if r.last_occurrence else None
+            }
+            for r in recurring
+        ]
+    }
+
+
+# ==================== DATABASE STATEMENTS ====================
+
+@app.get("/db/statements")
+async def db_get_statements(db: AsyncSession = Depends(get_db)):
+    """Get all uploaded bank statements"""
+    statements = await BankStatementCRUD.get_all(db)
+    
+    return {
+        "statements": [
+            {
+                "id": s.id,
+                "filename": s.filename,
+                "bank_name": s.bank_name,
+                "upload_date": s.upload_date.isoformat() if s.upload_date else None,
+                "total_transactions": s.total_transactions
+            }
+            for s in statements
+        ]
+    }
+
+
+@app.get("/db/statements/{statement_id}/transactions")
+async def db_get_statement_transactions(statement_id: int, db: AsyncSession = Depends(get_db)):
+    """Get all transactions for a specific statement"""
+    transactions = await TransactionCRUD.get_by_statement(db, statement_id)
+    
+    return {
+        "statement_id": statement_id,
+        "transactions": [
+            {
+                "id": t.id,
+                "date": t.date.isoformat() if t.date else None,
+                "description": t.description,
+                "debit": t.debit,
+                "credit": t.credit,
+                "category": t.category_name
+            }
+            for t in transactions
+        ]
+    }
 
 
 if __name__ == '__main__':

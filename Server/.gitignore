@@ -7,3 +7,9 @@ output.json
 /__pycache__
 /static
 *json
+/Alerts/__pycache__
+/Analytics/__pycache__
+/Categorize/__pycache__
+/Goal/__pycache__
+/pdftojson/__pycache__
+/User/__pycache__

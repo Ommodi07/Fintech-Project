@@ -43,11 +43,13 @@ class TransactionCategorizer:
     
     def categorize_transaction(self, transaction):
         """Categorize a single transaction based on its details"""
-        transaction_text = transaction.get('transaction_details', '').lower()
+        # Handle both old and new field names for backward compatibility
+        description_field = transaction.get('description') or transaction.get('transaction_details', '')
+        transaction_text = str(description_field).lower()
         
         # Check if it's income (credit > 0)
         if transaction.get('credit', 0) > 0:
-            if 'int.pd' in transaction_text or 'interest' in transaction_text:
+            if 'int.pd' in transaction_text or 'interest' in transaction_text or 'salary' in transaction_text:
                 return 'Income'
         
         # Check against category keywords
@@ -66,7 +68,18 @@ class TransactionCategorizer:
         """Load and categorize all transactions from JSON file"""
         try:
             with open(json_file_path, 'r', encoding='utf-8') as file:
-                transactions = json.load(file)
+                data = json.load(file)
+            
+            # Handle both old format (direct list) and new format (with metadata)
+            if isinstance(data, dict) and 'transactions' in data:
+                print(f"Processing {data.get('metadata', {}).get('transaction_count', 'unknown')} transactions")
+                print(f"Source: {data.get('metadata', {}).get('source_file', 'unknown')} (Method: {data.get('metadata', {}).get('parsing_method', 'unknown')})")
+                transactions = data['transactions']
+            elif isinstance(data, list):
+                transactions = data
+            else:
+                print(f"Error: Unexpected data format in {json_file_path}")
+                return None
             
             categorized_data = {
                 'categories': defaultdict(list),
@@ -86,6 +99,14 @@ class TransactionCategorizer:
                 debit_amount = transaction.get('debit', 0)
                 credit_amount = transaction.get('credit', 0)
                 
+                # Ensure amounts are numbers
+                try:
+                    debit_amount = float(debit_amount) if debit_amount else 0
+                    credit_amount = float(credit_amount) if credit_amount else 0
+                except (ValueError, TypeError):
+                    debit_amount = 0
+                    credit_amount = 0
+                
                 categorized_data['summary'][category]['count'] += 1
                 categorized_data['summary'][category]['total_debit'] += debit_amount
                 categorized_data['summary'][category]['total_credit'] += credit_amount
@@ -94,10 +115,26 @@ class TransactionCategorizer:
                 date_str = transaction.get('date', '')
                 if date_str:
                     try:
-                        month_year = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y-%m')
-                        categorized_data['monthly_breakdown'][month_year][category]['count'] += 1
-                        categorized_data['monthly_breakdown'][month_year][category]['total_debit'] += debit_amount
-                        categorized_data['monthly_breakdown'][month_year][category]['total_credit'] += credit_amount
+                        # Handle different date formats
+                        date_formats = ['%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d']
+                        date_obj = None
+                        
+                        for fmt in date_formats:
+                            try:
+                                date_obj = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if date_obj:
+                            month_year = date_obj.strftime('%Y-%m')
+                            categorized_data['monthly_breakdown'][month_year][category]['count'] += 1
+                            categorized_data['monthly_breakdown'][month_year][category]['total_debit'] += debit_amount
+                            categorized_data['monthly_breakdown'][month_year][category]['total_credit'] += credit_amount
+                        
+                    except Exception as e:
+                        print(f"Date parsing error for '{date_str}': {e}")
+                        pass  # Skip if date format is invalid
                     except ValueError:
                         pass  # Skip if date format is invalid
             
@@ -188,7 +225,9 @@ def main_categorizer(json_path):
                 print(f"\n{category} (showing first 3 transactions):")
                 for i, transaction in enumerate(transactions[:3]):
                     amount = f"₹{transaction.get('debit', 0):.2f}" if transaction.get('debit', 0) > 0 else f"+₹{transaction.get('credit', 0):.2f}"
-                    print(f"  {transaction.get('date', 'N/A')} - {transaction.get('transaction_details', 'N/A')[:50]}... - {amount}")
+                    # Handle both old and new field names
+                    description = transaction.get('description') or transaction.get('transaction_details', 'N/A')
+                    print(f"  {transaction.get('date', 'N/A')} - {str(description)[:50]}... - {amount}")
         
         return output_file
     

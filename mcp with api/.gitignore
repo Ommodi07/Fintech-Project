@@ -1,0 +1,5 @@
+.env
+/venv
+/MCP-Server/.venv
+/__pycache__
+/MCP-Server/src/goal/__pycache__

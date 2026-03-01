@@ -9,6 +9,7 @@ from google import genai
 from google.genai.types import GenerateContentConfig, Tool
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from memory import add_to_memory, get_memory, format_memory, clear_memory
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))  
@@ -82,7 +83,9 @@ async def ask_model(message: str) -> str:
                 config=GenerateContentConfig(tools=gemini_tools),
             )
 
-            next_prompt = message
+            # Include conversation history for context-aware responses
+            memory_context = format_memory()
+            next_prompt = f"Previous conversation context:\n{memory_context}\n\nUser message: {message}" if memory_context != "No previous conversation." else message
             last_text = ""
 
             for _ in range(3):
@@ -97,7 +100,10 @@ async def ask_model(message: str) -> str:
                             function_calls.append(part.function_call)
 
                 if not function_calls:
-                    return last_text or "I couldn't generate a response."
+                    result = last_text or "I couldn't generate a response."
+                    # Add exchange to memory for future context
+                    add_to_memory(message, result)
+                    return result
 
                 tool_lines = []
                 for call in function_calls:
@@ -116,7 +122,10 @@ async def ask_model(message: str) -> str:
                     + "\nNow answer the user naturally based on these results."
                 )
 
-            return last_text or "I couldn't complete the request."
+            result = last_text or "I couldn't complete the request."
+            # Add exchange to memory for future context
+            add_to_memory(message, result)
+            return result
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -148,28 +157,42 @@ class ChatHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "Not found"})
 
     def do_POST(self):
-        if self.path != "/chat":
+        if self.path == "/chat":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(content_length).decode("utf-8")
+                payload = json.loads(body) if body else {}
+                message = (payload.get("message") or "").strip()
+            except Exception:
+                self._send_json(400, {"error": "Invalid request body"})
+                return
+
+            if not message:
+                self._send_json(400, {"error": "Message is required"})
+                return
+
+            try:
+                reply = asyncio.run(ask_model(message))
+                self._send_json(200, {"reply": reply})
+            except Exception as error:
+                self._send_json(500, {"error": str(error)})
+        
+        elif self.path == "/clear-memory":
+            try:
+                clear_memory()
+                self._send_json(200, {"message": "Chat history cleared successfully"})
+            except Exception as error:
+                self._send_json(500, {"error": str(error)})
+        
+        elif self.path == "/get-memory":
+            try:
+                memory = get_memory()
+                self._send_json(200, {"memory": memory})
+            except Exception as error:
+                self._send_json(500, {"error": str(error)})
+        
+        else:
             self._send_json(404, {"error": "Not found"})
-            return
-
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(content_length).decode("utf-8")
-            payload = json.loads(body) if body else {}
-            message = (payload.get("message") or "").strip()
-        except Exception:
-            self._send_json(400, {"error": "Invalid request body"})
-            return
-
-        if not message:
-            self._send_json(400, {"error": "Message is required"})
-            return
-
-        try:
-            reply = asyncio.run(ask_model(message))
-            self._send_json(200, {"reply": reply})
-        except Exception as error:
-            self._send_json(500, {"error": str(error)})
 
 
 def main():

@@ -196,7 +196,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    host = "127.0.0.1"
+    host = "0.0.0.0"
     port = int(os.getenv("PORT", "8080"))
     server = ThreadingHTTPServer((host, port), ChatHandler)
     print(f"Chat UI running on http://{host}:{port}")

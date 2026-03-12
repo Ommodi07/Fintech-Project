@@ -1,4 +1,4 @@
-output.txt
+*.txt
 /extracted_images
 state.pdf
 /venv
@@ -14,3 +14,6 @@ output.json
 /pdftojson/__pycache__
 /User/__pycache__
 /database/__pycache__
+docker-compose.yml
+*.conf
+setup.md

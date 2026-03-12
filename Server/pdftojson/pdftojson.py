@@ -169,6 +169,31 @@ def extract_table_structure(text: str) -> Dict:
     
     return {'headers': potential_headers, 'total_lines': len(lines)}
 
+def _truncate_text(text, max_chars=30000):
+    """Truncate text to stay within Gemini token limits while preserving transaction data."""
+    if len(text) <= max_chars:
+        return text
+    
+    lines = text.split('\n')
+    # Keep the first ~10 lines (account info/headers) and as many transaction lines as possible
+    header_lines = lines[:10]
+    remaining_lines = lines[10:]
+    
+    header_text = '\n'.join(header_lines)
+    remaining_budget = max_chars - len(header_text) - 100  # buffer
+    
+    kept_lines = []
+    current_len = 0
+    for line in remaining_lines:
+        if current_len + len(line) + 1 > remaining_budget:
+            break
+        kept_lines.append(line)
+        current_len += len(line) + 1
+    
+    truncated = header_text + '\n' + '\n'.join(kept_lines)
+    print(f"Text truncated from {len(text)} to {len(truncated)} chars ({len(header_lines) + len(kept_lines)}/{len(lines)} lines kept)")
+    return truncated
+
 def format_Data(text):
     if not GENAI_AVAILABLE or genai is None:
         print("Google AI not available. Skipping AI-based parsing.")
@@ -180,10 +205,10 @@ def format_Data(text):
         return None
         
     try:
-        genai.configure(api_key=GEMINI_API)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        from google.genai import types
+        client = genai.Client(api_key=GEMINI_API)
     except Exception as e:
-        print(f"Failed to initialize AI model: {e}")
+        print(f"Failed to initialize AI client: {e}")
         return None
     
     # Detect bank type
@@ -196,9 +221,11 @@ def format_Data(text):
     print(f"Detected bank type: {bank_config['name']}")
     print(f"Found {len(table_info['headers'])} potential header rows")
     
+    # Truncate text to avoid oversized prompts that cause 504 timeouts
+    truncated_text = _truncate_text(text)
+    
     # Create dynamic prompt based on detected bank
-    prompt = f"""
-        You are analyzing a bank statement from {bank_config['name']}. Extract ONLY the transaction data from the text below.
+    prompt = f"""You are analyzing a bank statement from {bank_config['name']}. Extract ONLY the transaction data from the text below.
 
 IMPORTANT INSTRUCTIONS:
 1. Look for the transaction table/data section and ignore headers, footers, account info, etc.
@@ -235,29 +262,69 @@ Example output format:
     "debit": 245.50,
     "credit": 0,
     "balance": 15430.25
-  }},
-  {{
-    "date": "2022-01-16", 
-    "description": "SALARY CREDIT",
-    "reference": "NEFT-987654321",
-    "debit": 0,
-    "credit": 50000.00,
-    "balance": 65430.25
   }}
 ]
 
 Bank statement text to process:
-{text}
-    """
+{truncated_text}
+"""
     
-    try:
-        print("Sending request to Gemini API...")
-        response = model.generate_content(prompt)
-        print("Gemini API response received")
-        return response.text
-    except Exception as e:
-        print(f"Error calling Gemini API: {e}")
-        return None
+    import time
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"Sending request to Gemini API (attempt {attempt}/{max_retries})...")
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=65536,
+                    temperature=0.1,
+                    http_options=types.HttpOptions(timeout=180_000),
+                ),
+            )
+            print("Gemini API response received")
+            return response.text
+        except Exception as e:
+            print(f"Error calling Gemini API (attempt {attempt}): {e}")
+            if attempt < max_retries:
+                wait_time = 5 * attempt  # longer backoff: 5s, 10s
+                print(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+    print("All Gemini API attempts failed.")
+    return None
+
+def _repair_json(json_str: str) -> str:
+    """Attempt to fix common JSON issues from AI output, including truncation."""
+    # Remove trailing commas before ] or }
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+    # Fix missing commas between } and { (adjacent objects in array)
+    json_str = re.sub(r'}\s*{', '},{', json_str)
+    # Fix missing commas between a quoted value and the next key
+    #   "value"  "key"  or  "value"\n  "key"
+    json_str = re.sub(r'(\")\s*\n?\s*(\")', r'\1,\2', json_str)
+    # Fix missing commas after numbers before a key:  123  "key"  or  123\n  "key"
+    json_str = re.sub(r'(\d)\s*\n?\s*(\")', r'\1,\2', json_str)
+    # Fix missing commas after booleans/null before a key
+    json_str = re.sub(r'(true|false|null)\s*\n?\s*(\")', r'\1,\2', json_str)
+    # Fix missing commas between } and "  (end of nested obj and next key)
+    json_str = re.sub(r'}\s*\n?\s*(\")', r'},\1', json_str)
+    # Fix missing commas between ] and " (end of array and next key)
+    json_str = re.sub(r']\s*\n?\s*(\")', r'],\1', json_str)
+    # Fix missing commas between } and [ or { (adjacent structures)
+    json_str = re.sub(r'}\s*\n?\s*(\[)', r'},\1', json_str)
+    
+    # Handle truncated JSON: try to close the array after the last complete object
+    json_str = json_str.strip()
+    if json_str.startswith('[') and not json_str.endswith(']'):
+        # Find the last complete object (last occurrence of })
+        last_brace = json_str.rfind('}')
+        if last_brace > 0:
+            json_str = json_str[:last_brace + 1] + ']'
+            # Remove any trailing comma before ]
+            json_str = re.sub(r',\s*\]$', ']', json_str)
+    
+    return json_str
 
 def validate_json_output(json_str: str) -> tuple:
     """Validate if the AI output is valid JSON and contains reasonable transaction data"""
@@ -266,12 +333,29 @@ def validate_json_output(json_str: str) -> tuple:
         json_str = json_str.strip()
         if json_str.startswith('```json'):
             json_str = json_str[7:]
+        if json_str.startswith('```'):
+            json_str = json_str[3:]
         if json_str.endswith('```'):
             json_str = json_str[:-3]
         json_str = json_str.strip()
         
-        # Parse JSON
-        data = json.loads(json_str)
+        # Always apply repair (handles truncation and formatting issues)
+        repaired = _repair_json(json_str)
+        
+        # Try repaired first, then original
+        data = None
+        for attempt_str in [repaired, json_str]:
+            try:
+                data = json.loads(attempt_str)
+                if attempt_str is repaired and attempt_str != json_str:
+                    print("JSON repair successful (recovered from truncated/malformed response)")
+                break
+            except json.JSONDecodeError:
+                continue
+        
+        if data is None:
+            print("JSON parsing failed even after repair")
+            return False, None
         
         # Check if it's a list
         if not isinstance(data, list):
@@ -312,8 +396,11 @@ def basic_transaction_extraction(text: str) -> List[Dict]:
     transactions = []
     
     # Simple patterns for date and amount
-    date_pattern = r'\b(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b'
-    amount_pattern = r'\b(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\b'
+    date_patterns = [
+        r'\b(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b',
+        r'\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[,.]?\s*\d{4})\b',
+    ]
+    amount_pattern = r'[-+]?\d{1,3}(?:,\d{3})*\.\d{2}'
     
     for line in lines:
         line = line.strip()
@@ -321,32 +408,59 @@ def basic_transaction_extraction(text: str) -> List[Dict]:
             continue
             
         # Look for lines with dates and amounts
-        dates = re.findall(date_pattern, line)
-        amounts = re.findall(amount_pattern, line.replace(',', ''))
+        dates = []
+        for dp in date_patterns:
+            dates.extend(re.findall(dp, line, re.IGNORECASE))
+        amounts = re.findall(amount_pattern, line)
         
         if dates and amounts and len(line.split()) > 3:
             try:
-                # Very basic transaction structure
+                # Skip summary/total lines
+                line_lower = line.lower()
+                if any(word in line_lower for word in ['total', 'summary', 'opening balance', 'closing balance']):
+                    continue
+                    
+                # Parse amounts - handle +/- prefixed values
+                parsed_amounts = []
+                for a in amounts:
+                    clean = a.replace(',', '')
+                    parsed_amounts.append(float(clean))
+                
+                debit = 0
+                credit = 0
+                balance = 0
+                
+                # Assign amounts based on sign or position
+                for pa in parsed_amounts[:-1] if len(parsed_amounts) > 1 else parsed_amounts:
+                    if pa < 0:
+                        debit = abs(pa)
+                    elif pa > 0:
+                        credit = pa
+                if len(parsed_amounts) > 1:
+                    balance = abs(parsed_amounts[-1])
+                
+                # If no sign-based assignment, use keywords
+                if debit == 0 and credit == 0 and parsed_amounts:
+                    val = abs(parsed_amounts[0])
+                    if any(word in line_lower for word in ['credit', 'deposit', 'salary', 'interest']):
+                        credit = val
+                    else:
+                        debit = val
+                
                 transaction = {
                     'date': dates[0],
                     'description': line,
                     'reference': '',
-                    'debit': float(amounts[0]) if len(amounts) > 0 else 0,
-                    'credit': 0,
-                    'balance': float(amounts[-1]) if len(amounts) > 1 else 0
+                    'debit': debit,
+                    'credit': credit,
+                    'balance': balance
                 }
-                
-                # Try to determine if it's debit or credit based on keywords
-                line_lower = line.lower()
-                if any(word in line_lower for word in ['credit', 'deposit', 'salary', 'interest']):
-                    transaction['credit'] = transaction['debit'] 
-                    transaction['debit'] = 0
                 
                 transactions.append(transaction)
             except (ValueError, IndexError):
                 continue
     
-    return transactions[:20]  # Limit to first 20 potential transactions
+    return transactions  # Return all found transactions
 
 def main_pdftojson(PDF_PATH):
     """Enhanced PDF to JSON conversion with fallback parsing"""
@@ -402,6 +516,13 @@ def main_pdftojson(PDF_PATH):
     parsing_method = "AI"
     
     if formatted_json:
+        # Debug: save raw AI response for inspection
+        try:
+            with open("ai_raw_response.txt", "w", encoding="utf-8") as dbg:
+                dbg.write(formatted_json)
+            print(f"Raw AI response saved to ai_raw_response.txt ({len(formatted_json)} chars)")
+        except Exception:
+            pass
         is_valid, transactions = validate_json_output(formatted_json)
         if is_valid:
             parsed_transactions = transactions

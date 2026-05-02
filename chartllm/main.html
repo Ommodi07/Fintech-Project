@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>ChartLLM - Interactive Stock Analysis</title>
+
+  <script src="https://cdn.anychart.com/releases/8.12.1/js/anychart-bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: #131722;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    #container {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Control Panel */
+    #controls {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      background: #1e222d;
+      border: 1px solid #363c4e;
+      border-radius: 8px;
+      padding: 16px;
+      z-index: 1000;
+      color: #d1d4dc;
+      min-width: 300px;
+    }
+
+    #controls h3 {
+      margin: 0 0 12px 0;
+      color: #2962FF;
+      font-size: 16px;
+    }
+
+    .control-group {
+      margin-bottom: 12px;
+    }
+
+    .control-group label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: #878a93;
+    }
+
+    .control-group input,
+    .control-group select {
+      width: 100%;
+      padding: 6px 8px;
+      background: #131722;
+      border: 1px solid #363c4e;
+      border-radius: 4px;
+      color: #d1d4dc;
+      font-size: 13px;
+    }
+
+    .control-group button {
+      width: 100%;
+      padding: 8px;
+      background: #2962FF;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 13px;
+    }
+
+    .control-group button:hover {
+      background: #1e54e6;
+    }
+
+    #status {
+      margin-top: 8px;
+      padding: 8px;
+      background: #131722;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #878a93;
+    }
+
+    /* Chat Widget Styles */
+    #chat-widget {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 380px;
+      height: 550px;
+      background-color: #1e222d;
+      border: 1px solid #363c4e;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      transition: height 0.3s ease;
+    }
+
+    #chat-widget.collapsed {
+      height: 50px;
+    }
+
+    #chat-header {
+      padding: 14px 16px;
+      background-color: #2a2e39;
+      color: #d1d4dc;
+      border-bottom: 1px solid #363c4e;
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #chat-header .title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #chat-header .badge {
+      background: #2962FF;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: normal;
+    }
+
+    #toggle-chat {
+      background: none;
+      border: none;
+      color: #d1d4dc;
+      cursor: pointer;
+      font-size: 18px;
+      padding: 0;
+      line-height: 1;
+    }
+
+    #toggle-chat:hover {
+      color: #2962FF;
+    }
+
+    #chat-widget.collapsed #chat-messages,
+    #chat-widget.collapsed #example-questions,
+    #chat-widget.collapsed #chat-input-area {
+      display: none;
+    }
+
+    #chat-messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message {
+      padding: 10px 12px;
+      border-radius: 8px;
+      max-width: 85%;
+      word-wrap: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background-color: #2962FF;
+      color: white;
+    }
+
+    .message.bot {
+      align-self: flex-start;
+      background-color: #2a2e39;
+      color: #d1d4dc;
+    }
+
+    .message.system {
+      align-self: center;
+      background-color: #363c4e;
+      color: #878a93;
+      font-size: 11px;
+      max-width: 90%;
+      text-align: center;
+    }
+
+    #example-questions {
+      padding: 8px 16px;
+      background: #131722;
+      border-top: 1px solid #363c4e;
+      font-size: 11px;
+    }
+
+    .example-btn {
+      display: inline-block;
+      margin: 4px 4px 4px 0;
+      padding: 4px 8px;
+      background: #2a2e39;
+      color: #2962FF;
+      border: 1px solid #2962FF;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .example-btn:hover {
+      background: #2962FF;
+      color: white;
+    }
+
+    #chat-input-area {
+      padding: 12px;
+      border-top: 1px solid #363c4e;
+      display: flex;
+      gap: 8px;
+    }
+
+    #chat-input {
+      flex: 1;
+      padding: 10px 12px;
+      background-color: #131722;
+      border: 1px solid #363c4e;
+      border-radius: 4px;
+      color: #d1d4dc;
+      outline: none;
+      font-size: 13px;
+    }
+
+    #chat-input:focus {
+      border-color: #2962FF;
+    }
+
+    #send-btn {
+      padding: 10px 18px;
+      background-color: #2962FF;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 13px;
+    }
+
+    #send-btn:hover {
+      background-color: #1e54e6;
+    }
+
+    #send-btn:disabled {
+      background-color: #363c4e;
+      cursor: not-allowed;
+    }
+
+    /* Scrollbar styling */
+    #chat-messages::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #chat-messages::-webkit-scrollbar-track {
+      background: #1e222d;
+    }
+
+    #chat-messages::-webkit-scrollbar-thumb {
+      background: #363c4e;
+      border-radius: 3px;
+    }
+
+    /* Loading indicator */
+    .loading {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #363c4e;
+      border-top-color: #2962FF;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="controls">
+    <h3>📊 ChartLLM Controls</h3>
+    
+    <div class="control-group">
+      <label>Stock Symbol</label>
+      <input type="text" id="symbol-input" value="AAPL" placeholder="e.g., AAPL, TSLA">
+    </div>
+    
+    <div class="control-group">
+      <label>Interval</label>
+      <select id="interval-select">
+        <option value="1m">1 Minute</option>
+        <option value="5m" selected>5 Minutes</option>
+        <option value="15m">15 Minutes</option>
+        <option value="30m">30 Minutes</option>
+        <option value="60m">1 Hour</option>
+        <option value="1d">1 Day</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>BB Period</label>
+      <input type="number" id="bb-period" value="20" min="5" max="50">
+    </div>
+    
+    <div class="control-group">
+      <label>BB Multiplier</label>
+      <input type="number" id="bb-multiplier" value="2.0" min="1" max="3" step="0.1">
+    </div>
+    
+    <div class="control-group">
+      <button id="load-btn">Load Chart</button>
+    </div>
+    
+    <div id="status">Ready</div>
+  </div>
+
+  <div id="container"></div>
+
+  <div id="chat-widget">
+    <div id="chat-header">
+      <div class="title">
+        🤖 ChartLLM Assistant
+        <span class="badge">Educational</span>
+      </div>
+      <button id="toggle-chat" title="Toggle chat">−</button>
+    </div>
+    <div id="chat-messages">
+      <div class="message bot">Hello! I'm ChartLLM, your educational chart analysis assistant. I can help you understand Bollinger Bands and what's happening in the chart. Ask me anything!</div>
+    </div>
+    <div id="example-questions">
+      <div style="margin-bottom: 4px; color: #878a93;">Quick questions:</div>
+      <span class="example-btn" data-question="What does band squeeze mean?">Band squeeze?</span>
+      <span class="example-btn" data-question="Why did price reject the upper band?">Upper band rejection?</span>
+      <span class="example-btn" data-question="Explain this pattern">Explain pattern</span>
+    </div>
+    <div id="chat-input-area">
+      <input type="text" id="chat-input" placeholder="Ask about the chart..." />
+      <button id="send-btn">Send</button>
+    </div>
+  </div>
+
+  <script>
+    // ===== STATE MANAGEMENT =====
+    let currentSymbol = 'AAPL';
+    let currentInterval = '5m';
+    let currentChartData = null;
+    let chart = null;
+    let plot = null;
+
+    // ===== DOM ELEMENTS =====
+    const symbolInput = document.getElementById('symbol-input');
+    const intervalSelect = document.getElementById('interval-select');
+    const bbPeriod = document.getElementById('bb-period');
+    const bbMultiplier = document.getElementById('bb-multiplier');
+    const loadBtn = document.getElementById('load-btn');
+    const statusDiv = document.getElementById('status');
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('send-btn');
+    const chatMessages = document.getElementById('chat-messages');
+
+    // ===== UTILITY FUNCTIONS =====
+    function setStatus(message, isError = false) {
+      statusDiv.textContent = message;
+      statusDiv.style.color = isError ? '#ef5350' : '#878a93';
+    }
+
+    function appendMessage(text, sender) {
+      const msgDiv = document.createElement('div');
+      msgDiv.classList.add('message', sender);
+      
+      // Clean up text formatting
+      let cleanText = text.replace(/\*\*\*/g, ''); // Remove triple asterisks
+      cleanText = cleanText.replace(/\*\*/g, '');   // Remove double asterisks
+      cleanText = cleanText.replace(/\n/g, '<br>'); // Convert newlines to breaks
+      
+      msgDiv.innerHTML = cleanText;
+      chatMessages.appendChild(msgDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function appendSystemMessage(text) {
+      appendMessage(text, 'system');
+    }
+
+    // ===== CHART LOADING =====
+    async function loadChartData() {
+      const symbol = symbolInput.value.trim().toUpperCase();
+      const interval = intervalSelect.value;
+      const period = bbPeriod.value;
+      const multiplier = bbMultiplier.value;
+
+      if (!symbol) {
+        setStatus('Please enter a symbol', true);
+        return;
+      }
+
+      setStatus('Loading data...');
+      loadBtn.disabled = true;
+
+      try {
+        const response = await fetch('http://localhost:8000/api/chart-data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: symbol,
+            interval: interval,
+            period: '1d',
+            bb_period: parseInt(period),
+            bb_multiplier: parseFloat(multiplier)
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        currentChartData = data;
+        currentSymbol = symbol;
+        currentInterval = interval;
+
+        renderChart(data);
+        displayEvents(data.detected_events);
+        setStatus(`✓ Loaded ${symbol} (${interval})`);
+
+      } catch (error) {
+        console.error('Error loading chart:', error);
+        setStatus(`Error: ${error.message}`, true);
+      } finally {
+        loadBtn.disabled = false;
+      }
+    }
+
+    // ===== CHART RENDERING =====
+    function renderChart(data) {
+      // Prepare data for AnyChart
+      const table = anychart.data.table();
+      table.addData(data.candles);
+
+      const mapping = table.mapAs({
+        open: 1, high: 2, low: 3, close: 4, volume: 5
+      });
+
+      // Create or reset chart
+      if (!chart) {
+        chart = anychart.stock();
+        chart.background().fill("#131722");
+        chart.container("container");
+        plot = chart.plot(0);
+      } else {
+        plot.removeAllSeries();
+      }
+
+      plot.background().fill("#131722");
+      
+      // Configure grid lines
+      plot.xGrid(true);
+      plot.xGrid().stroke("#363c4e");
+      plot.yGrid(true);
+      plot.yGrid().stroke("#363c4e");
+
+      // Add candlestick series
+      const candles = plot.candlestick(mapping);
+      candles.risingFill("#26a69a");
+      candles.fallingFill("#ef5350");
+      candles.name(`${data.symbol} Price`);
+
+      // Add Bollinger Bands
+      const bbTable = anychart.data.table();
+      bbTable.addData(data.bollinger_bands);
+
+      const middleMap = bbTable.mapAs({ value: 1 });
+      const upperMap = bbTable.mapAs({ value: 2 });
+      const lowerMap = bbTable.mapAs({ value: 3 });
+
+      plot.line(middleMap).stroke("2px #2962FF").name("BB Middle");
+      plot.line(upperMap).stroke("1.5px #9c27b0").name("BB Upper");
+      plot.line(lowerMap).stroke("1.5px #9c27b0").name("BB Lower");
+
+      // Set title
+      chart.title(`${data.symbol} - ${data.interval} - Bollinger Bands`);
+      chart.title().fontColor("#d1d4dc");
+
+      chart.draw();
+    }
+
+    // ===== EVENT DISPLAY =====
+    function displayEvents(events) {
+      if (!events || events.length === 0) {
+        appendSystemMessage('No significant events detected');
+        return;
+      }
+
+      const eventTypes = events.map(e => e.event_type).join(', ');
+      appendSystemMessage(`📍 Events detected: ${eventTypes}`);
+    }
+
+    // ===== CHAT FUNCTIONALITY =====
+    async function sendMessage() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+
+      if (!currentSymbol) {
+        appendMessage('Please load a chart first!', 'bot');
+        return;
+      }
+
+      appendMessage(text, 'user');
+      chatInput.value = '';
+      sendBtn.disabled = true;
+
+      // Show loading
+      const loadingDiv = document.createElement('div');
+      loadingDiv.classList.add('message', 'bot');
+      loadingDiv.innerHTML = '<span class="loading"></span> Analyzing...';
+      chatMessages.appendChild(loadingDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      try {
+        const response = await fetch('http://localhost:8000/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            symbol: currentSymbol,
+            interval: currentInterval,
+            session_id: 'web-session'
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        // Remove loading message
+        chatMessages.removeChild(loadingDiv);
+        
+        appendMessage(data.response, 'bot');
+
+      } catch (error) {
+        console.error('Error:', error);
+        chatMessages.removeChild(loadingDiv);
+        appendMessage('Sorry, I encountered an error. Please try again.', 'bot');
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
+    // ===== EVENT LISTENERS =====
+    loadBtn.addEventListener('click', loadChartData);
+
+    sendBtn.addEventListener('click', sendMessage);
+    chatInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !sendBtn.disabled) sendMessage();
+    });
+
+    // Example question buttons
+    document.querySelectorAll('.example-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        chatInput.value = btn.dataset.question;
+        sendMessage();
+      });
+    });
+
+    // Toggle chat widget
+    const toggleChatBtn = document.getElementById('toggle-chat');
+    const chatWidget = document.getElementById('chat-widget');
+    
+    toggleChatBtn.addEventListener('click', () => {
+      chatWidget.classList.toggle('collapsed');
+      toggleChatBtn.textContent = chatWidget.classList.contains('collapsed') ? '+' : '−';
+    });
+
+    // Auto-load default chart on startup
+    window.addEventListener('load', () => {
+      setTimeout(loadChartData, 500);
+    });
+  </script>
+</body>
+
+</html>
